@@ -8,7 +8,8 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #333; min-height: 100vh; }
 
-    header { background: #2c3e50; color: white; padding: 20px 24px; font-size: 1.4rem; font-weight: 700; }
+    header { background: #2c3e50; color: white; padding: 20px 24px; font-size: 1.4rem; font-weight: 700; display: flex; align-items: center; gap: 12px; }
+    #sync-status { font-size: 0.75rem; font-weight: 400; opacity: 0.75; margin-left: auto; }
 
     .container { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
 
@@ -64,6 +65,7 @@
 
     .btn-add { padding: 10px 22px; background: #2c3e50; color: white; border: none; border-radius: 8px; font-size: 0.9rem; cursor: pointer; white-space: nowrap; }
     .btn-add:hover { background: #1a252f; }
+    .btn-add:disabled { background: #aaa; cursor: not-allowed; }
 
     /* 거래 목록 */
     .list-box { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.07); }
@@ -105,7 +107,10 @@
 </head>
 <body>
 
-<header>📒 가계부</header>
+<header>
+  📒 가계부
+  <span id="sync-status">연결 중...</span>
+</header>
 
 <div class="container">
 
@@ -165,7 +170,7 @@
       <select id="tx-category"></select>
       <input type="text" id="tx-desc" placeholder="내용" maxlength="30">
       <input type="number" id="tx-amount" placeholder="금액" min="0">
-      <button class="btn-add" onclick="addTransaction()">추가</button>
+      <button class="btn-add" id="btn-add" onclick="addTransaction()">추가</button>
     </div>
   </div>
 
@@ -185,16 +190,29 @@
 
 </div>
 
+<!-- Supabase JS SDK -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+  /* ─── Supabase 설정 ─── */
+  const SUPABASE_URL  = 'https://pzikudakfsnahsyvtmbb.supabase.co';
+  const SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6aWt1ZGFrZnNuYWhzeXZ0bWJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0OTQwNjcsImV4cCI6MjA5NzA3MDA2N30.8tbU3x_kHiTp5O3jOjnqJGgVxpO5QR9UbFwbA_Z7jo8';
+  const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
   const INCOME_CATS  = ['급여', '보너스', '배당금', '이자수익', '임대수입', '부업', '용돈', '보험금', '기타수입'];
   const EXPENSE_CATS = ['식비', '외식/배달', '교통비', '주거/월세', '통신비', '의료비', '쇼핑', '문화/여가', '교육', '보험료', '미용/뷰티', '구독서비스', '경조사', '여행', '기타지출'];
 
-  let transactions = JSON.parse(localStorage.getItem('가계부') || '[]');
+  let transactions = [];
   let filter = 'all';
 
   document.getElementById('tx-date').value = new Date().toISOString().split('T')[0];
   updateCategories();
 
+  /* ─── 상태 표시 ─── */
+  function setStatus(msg) {
+    document.getElementById('sync-status').textContent = msg;
+  }
+
+  /* ─── 카테고리 업데이트 ─── */
   function updateCategories() {
     const type = document.getElementById('tx-type').value;
     const sel  = document.getElementById('tx-category');
@@ -202,35 +220,92 @@
     sel.innerHTML = cats.map(c => `<option value="${c}">${c}</option>`).join('');
   }
 
-  function save() { localStorage.setItem('가계부', JSON.stringify(transactions)); }
-
   function fmt(n) { return Number(n).toLocaleString('ko-KR') + '원'; }
 
-  function addTransaction() {
+  /* ─── DB에서 전체 로드 ─── */
+  async function loadTransactions() {
+    setStatus('불러오는 중...');
+    const { data, error } = await db
+      .from('transactions')
+      .select('*')
+      .order('date', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setStatus('⚠️ 불러오기 실패');
+      console.error(error);
+      return;
+    }
+
+    transactions = data.map(row => ({
+      id:       row.id,
+      date:     row.date,
+      type:     row.type,
+      category: row.category,
+      desc:     row.description,
+      amount:   row.amount,
+    }));
+
+    setStatus('✅ 동기화됨');
+    render();
+  }
+
+  /* ─── 추가 ─── */
+  async function addTransaction() {
     const date     = document.getElementById('tx-date').value;
     const type     = document.getElementById('tx-type').value;
     const category = document.getElementById('tx-category').value;
     const desc     = document.getElementById('tx-desc').value.trim();
     const amount   = parseInt(document.getElementById('tx-amount').value);
 
-    if (!desc)              { alert('내용을 입력하세요.');    return; }
+    if (!desc)               { alert('내용을 입력하세요.');        return; }
     if (!amount || amount <= 0) { alert('올바른 금액을 입력하세요.'); return; }
 
-    transactions.unshift({ id: Date.now(), date, type, category, desc, amount });
-    save();
-    render();
+    const btn = document.getElementById('btn-add');
+    btn.disabled = true;
+    setStatus('저장 중...');
+
+    const newRow = {
+      id:          Date.now(),
+      date,
+      type,
+      category,
+      description: desc,
+      amount,
+    };
+
+    const { error } = await db.from('transactions').insert(newRow);
+
+    if (error) {
+      setStatus('⚠️ 저장 실패');
+      console.error(error);
+      btn.disabled = false;
+      return;
+    }
+
     document.getElementById('tx-desc').value   = '';
     document.getElementById('tx-amount').value = '';
+    btn.disabled = false;
+    await loadTransactions();
   }
 
-  function deleteTransaction(id) {
-    transactions = transactions.filter(t => t.id !== id);
-    save(); render();
+  /* ─── 삭제 ─── */
+  async function deleteTransaction(id) {
+    setStatus('삭제 중...');
+    const { error } = await db.from('transactions').delete().eq('id', id);
+    if (error) { setStatus('⚠️ 삭제 실패'); console.error(error); return; }
+    await loadTransactions();
   }
 
-  function clearAll() {
+  /* ─── 전체 삭제 ─── */
+  async function clearAll() {
     if (!transactions.length) return;
-    if (confirm('전체 내역을 삭제할까요?')) { transactions = []; save(); render(); }
+    if (!confirm('전체 내역을 삭제할까요?')) return;
+
+    setStatus('삭제 중...');
+    const { error } = await db.from('transactions').delete().neq('id', 0);
+    if (error) { setStatus('⚠️ 삭제 실패'); console.error(error); return; }
+    await loadTransactions();
   }
 
   function setFilter(f, el) {
@@ -277,7 +352,6 @@
     const cH  = H - pad.top  - pad.bottom;
     const maxVal = Math.max(...data.map(d => Math.max(d.income, d.expense)), 1);
 
-    // 가로 격자 + Y축 레이블
     for (let i = 0; i <= 4; i++) {
       const y = pad.top + cH * (1 - i / 4);
       ctx.strokeStyle = i === 0 ? '#ccc' : '#f0f0f0';
@@ -290,7 +364,6 @@
       ctx.fillText(fmtY(Math.round(maxVal * i / 4)), pad.left - 6, y + 4);
     }
 
-    // 막대
     const groupW = cW / months.length;
     const barW   = Math.min(groupW * 0.28, 22);
     const gap    = 4;
@@ -326,8 +399,8 @@
     const expMap = Object.fromEntries(EXPENSE_CATS.map(c => [c, 0]));
 
     transactions.forEach(t => {
-      if (t.type === 'income')  (incMap[t.category] !== undefined ? incMap : (incMap['기타수입'] = (incMap['기타수입'] || 0), incMap))[t.category] += t.amount;
-      if (t.type === 'expense') (expMap[t.category] !== undefined ? expMap : (expMap['기타지출'] = (expMap['기타지출'] || 0), expMap))[t.category] += t.amount;
+      if (t.type === 'income'  && incMap[t.category] !== undefined) incMap[t.category] += t.amount;
+      if (t.type === 'expense' && expMap[t.category] !== undefined) expMap[t.category] += t.amount;
     });
 
     const incTotal = Object.values(incMap).reduce((s, v) => s + v, 0);
@@ -388,7 +461,14 @@
   document.getElementById('tx-desc').addEventListener('keydown',   e => { if (e.key === 'Enter') addTransaction(); });
   window.addEventListener('resize', drawBarChart);
 
-  requestAnimationFrame(render);
+  /* ─── 실시간 구독 (다른 탭/기기에서 변경 시 자동 반영) ─── */
+  db.channel('transactions-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
+      loadTransactions();
+    })
+    .subscribe();
+
+  loadTransactions();
 </script>
 
 </body>
