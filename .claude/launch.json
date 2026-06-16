@@ -6,6 +6,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["serve", "-l", "3000", "."],
       "port": 3000
+    },
+    {
+      "name": "머더헬프마켓",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "murder-help-market"],
+      "port": 3001
     }
   ]
 }
